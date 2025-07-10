@@ -1,31 +1,53 @@
 import { AppDataSource } from "../db";
-import { Account } from "../entities/account.entity";
-import { User } from "../entities/user.entity";
+import { Geo_Account } from "../entities/account.entity";
+import { Geo_User } from "../entities/user.entity";
 import { ApiResponse, ApiError } from "../utils/apiResponse";
-import * as bcrypt from "bcrypt";
+import axios from "axios";
 
 interface WebSocket {
-  send(message: string): void;
-  subscribe(topic: string): void;
-  close(): void;
+  send: (data: string) => void;
+}
+
+interface OldSystemAdmin {
+  id: string;
+  accountId: string;
+  firstname: string;
+  surname: string;
+  email: string;
+  phone: string;
+}
+
+interface OldSystemUser {
+  id: string;
+  accountId?: string;
+  firstname?: string;
+  surname: string;
+  email: string;
+  phone?: string;
 }
 
 export class AccountController {
-  private accountRepository = AppDataSource.getRepository(Account);
-  private userRepository = AppDataSource.getRepository(User);
+  private accountRepository = AppDataSource.getRepository(Geo_Account);
+  private userRepository = AppDataSource.getRepository(Geo_User);
 
-  private async checkPermission(user: User, targetAccountId: string): Promise<boolean> {
+  private async checkPermission(user: Geo_User, targetAccountId: string): Promise<boolean> {
     if (user.role !== "admin") return false;
-    if (user.adminType === "unlimited") return true;
-
-    if (!user.account || !user.account.type) return false; // Check for user.account and type
 
     const targetAccount = await this.accountRepository.findOne({
       where: { id: targetAccountId },
       relations: ["parent"],
     });
 
-    if (!targetAccount || !targetAccount.type) return false; // Check for targetAccount and type
+    if (!targetAccount) return false;
+
+    if (user.adminType === "unlimited" && user.account.type === "main") return true;
+
+    const isPrimaryAdmin = targetAccount.primaryAdminId === user.id;
+    const isAssignedToAccount = user.accountId === targetAccountId;
+
+    if (!isPrimaryAdmin && !isAssignedToAccount) return false;
+
+    if (user.adminType === "limited") return false;
 
     const hierarchy = ["main", "institutional", "regional", "district", "branch", "department"];
     const userAccountLevel = hierarchy.indexOf(user.account.type);
@@ -34,53 +56,62 @@ export class AccountController {
     return userAccountLevel <= targetAccountLevel || targetAccount.parentId === user.accountId;
   }
 
-  public async createAccount(
-    ws: WebSocket,
-    data: {
-      name: string;
-      type: "institutional" | "regional" | "district" | "branch" | "department";
-      parentId: string;
-      country: string;
-      adminIds: string[];
-      userIds: string[];
-    },
-    user: User
-  ) {
+  public async createAccount(ws: WebSocket, data: {
+    name: string;
+    description?: string;
+    type: "institutional" | "regional" | "district" | "branch" | "department";
+    parentId: string;
+    country: string;
+    primaryAdminId: string;
+    adminType: "limited" | "unlimited";
+    adminIds: string[];
+    userIds: string[];
+  }, user: Geo_User) {
     try {
-      if (!user.account || !user.account.type || (user.account.type !== "main" && user.adminType !== "unlimited")) {
-        throw new ApiError(403, "Only main account admins can create accounts");
+      if (user.account.type !== "main" || user.adminType !== "unlimited") {
+        throw new ApiError(403, "Only main account admins with unlimited privileges can create accounts");
       }
 
-      const { name, type, parentId, country, adminIds, userIds } = data;
+      const { name, description, type, parentId, country, primaryAdminId, adminType, adminIds, userIds } = data;
 
       const parent = await this.accountRepository.findOne({ where: { id: parentId } });
       if (!parent) throw new ApiError(404, "Parent account not found");
 
+      const primaryAdmin = await this.userRepository.findOne({ 
+        where: { id: primaryAdminId, role: "admin", accountId: user.accountId } 
+      });
+      if (!primaryAdmin) throw new ApiError(404, "Primary admin not found or not in your organization");
+
       const newAccount = this.accountRepository.create({
         name,
+        description,
         type,
         parentId,
         country,
         parent,
+        primaryAdminId,
       });
 
       await this.accountRepository.save(newAccount);
 
-      if (!newAccount.id) throw new ApiError(500, "Failed to generate account ID");
+      primaryAdmin.accountId = newAccount.id;
+      primaryAdmin.account = newAccount;
+      primaryAdmin.adminType = adminType;
+      await this.userRepository.save(primaryAdmin);
 
-      // Assign admins and users
-      const admins = await this.userRepository.findByIds(adminIds);
-      const users = await this.userRepository.findByIds(userIds);
+      const admins: Geo_User[] = await this.userRepository.findByIds(adminIds);
+      const users: Geo_User[] = await this.userRepository.findByIds(userIds);
 
       for (const admin of admins) {
-        if (admin.role !== "admin") continue;
+        if (admin.role !== "admin" || admin.accountId !== user.accountId || admin.id === primaryAdminId) continue;
         admin.accountId = newAccount.id;
         admin.account = newAccount;
+        admin.adminType = admin.adminType || "limited";
         await this.userRepository.save(admin);
       }
 
       for (const user of users) {
-        if (user.role !== "user") continue;
+        if (user.role !== "user" || user.accountId !== user.accountId) continue;
         user.accountId = newAccount.id;
         user.account = newAccount;
         await this.userRepository.save(user);
@@ -90,36 +121,33 @@ export class AccountController {
         JSON.stringify(
           new ApiResponse(201, "Account created successfully", {
             account: newAccount,
+            primaryAdmin,
             assignedAdmins: admins,
             assignedUsers: users,
           })
         )
       );
-    } catch (error: any) {
-      ws.send(JSON.stringify(new ApiError(500, error.message || "Failed to create account")));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to create account";
+      ws.send(JSON.stringify(new ApiError(500, message)));
     }
   }
 
-  public async createUser(
-    ws: WebSocket,
-    data: {
-      firstName: string;
-      lastName: string;
-      email: string;
-      phone: string;
-      password: string;
-      role: "admin" | "user";
-      adminType?: "limited" | "unlimited";
-      accountId: string;
-    },
-    user: User
-  ) {
+  public async createUser(ws: WebSocket, data: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone: string;
+    role: "admin" | "user";
+    adminType?: "limited" | "unlimited";
+    accountId: string;
+  }, user: Geo_User) {
     try {
-      if (!user.account || !user.account.type || (user.account.type !== "main" && user.adminType !== "unlimited")) {
-        throw new ApiError(403, "Only main account admins can create users");
+      if (user.account.type !== "main" || user.adminType !== "unlimited") {
+        throw new ApiError(403, "Only main account admins with unlimited privileges can create users");
       }
 
-      const { firstName, lastName, email, phone, password, role, adminType, accountId } = data;
+      const { firstName, lastName, email, phone, role, adminType, accountId } = data;
 
       const account = await this.accountRepository.findOne({ where: { id: accountId } });
       if (!account) throw new ApiError(404, "Account not found");
@@ -127,13 +155,11 @@ export class AccountController {
       const existingUser = await this.userRepository.findOne({ where: { email } });
       if (existingUser) throw new ApiError(409, "Email already exists");
 
-      const hashedPassword = await bcrypt.hash(password, 10);
       const newUser = this.userRepository.create({
         firstName,
         lastName,
         email,
         phone,
-        password: hashedPassword,
         role,
         adminType: role === "admin" ? adminType : undefined,
         accountId,
@@ -147,25 +173,29 @@ export class AccountController {
           new ApiResponse(201, `${role.charAt(0).toUpperCase() + role.slice(1)} created successfully`, newUser)
         )
       );
-    } catch (error: any) {
-      ws.send(JSON.stringify(new ApiError(500, error.message || "Failed to create user")));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to create user";
+      ws.send(JSON.stringify(new ApiError(500, message)));
     }
   }
 
-  public async assignUsers(ws: WebSocket, data: { userIds: string[]; accountId: string }, user: User) {
+  public async assignUsers(ws: WebSocket, data: { userIds: string[]; accountId: string }, user: Geo_User) {
     try {
       if (!(await this.checkPermission(user, data.accountId))) {
         throw new ApiError(403, "Insufficient permissions to assign users to this account");
       }
 
       const account = await this.accountRepository.findOne({ where: { id: data.accountId } });
-      if (!account || !account.id) throw new ApiError(404, "Account not found");
+      if (!account) throw new ApiError(404, "Account not found");
 
-      const usersToAssign = await this.userRepository.findByIds(data.userIds);
-      for (const user of usersToAssign) {
-        user.accountId = account.id;
-        user.account = account;
-        await this.userRepository.save(user);
+      const mainAccountId = user.account.type === "main" ? user.accountId : (await this.getMainAccount(user.accountId))?.id;
+      const usersToAssign: Geo_User[] = await this.userRepository.findByIds(data.userIds);
+
+      for (const userToAssign of usersToAssign) {
+        if (userToAssign.accountId !== mainAccountId && userToAssign.accountId !== user.accountId) continue;
+        userToAssign.accountId = account.id;
+        userToAssign.account = account;
+        await this.userRepository.save(userToAssign);
       }
 
       ws.send(
@@ -176,17 +206,24 @@ export class AccountController {
           })
         )
       );
-    } catch (error: any) {
-      ws.send(JSON.stringify(new ApiError(500, error.message || "Failed to assign users")));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to assign users";
+      ws.send(JSON.stringify(new ApiError(500, message)));
     }
   }
 
-  public async getAccounts(ws: WebSocket, user: User) {
-    try {
-      if (!user.account || !user.account.type) throw new ApiError(400, "User account not found");
+  private async getMainAccount(accountId: string): Promise<Geo_Account | null> {
+    let account = await this.accountRepository.findOne({ where: { id: accountId }, relations: ["parent"] });
+    while (account && account.parentId) {
+      account = await this.accountRepository.findOne({ where: { id: account.parentId }, relations: ["parent"] });
+    }
+    return account;
+  }
 
+  public async getAccounts(ws: WebSocket, user: Geo_User) {
+    try {
       let accounts;
-      if (user.account.type === "main" || user.adminType === "unlimited") {
+      if (user.account.type === "main" && user.adminType === "unlimited") {
         accounts = await this.accountRepository.find({ relations: ["parent", "users"] });
       } else {
         const hierarchy = ["main", "institutional", "regional", "district", "branch", "department"];
@@ -199,12 +236,99 @@ export class AccountController {
             types: hierarchy.slice(userAccountLevel),
           })
           .orWhere("account.id = :userAccountId", { userAccountId: user.accountId })
+          .orWhere("account.primaryAdminId = :userId", { userId: user.id })
           .getMany();
       }
 
       ws.send(JSON.stringify(new ApiResponse(200, "Accounts retrieved successfully", accounts)));
-    } catch (error: any) {
-      ws.send(JSON.stringify(new ApiError(500, error.message || "Failed to retrieve accounts")));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to retrieve accounts";
+      ws.send(JSON.stringify(new ApiError(500, message)));
+    }
+  }
+
+  public async getOrganizationUsers(ws: WebSocket, user: Geo_User, token: string) {
+    try {
+      if (user.role !== "admin") {
+        throw new ApiError(403, "Only admins can view organization users");
+      }
+
+      const mainAccountId = user.account.type === "main" ? user.accountId : (await this.getMainAccount(user.accountId))?.id;
+      if (!mainAccountId) throw new ApiError(404, "Main account not found");
+
+      const adminsResponse = await axios.get<OldSystemAdmin[]>("https://db-api-v2.akwaabasoftware.com/clients/user", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const admins = adminsResponse.data.filter(admin => `main-${admin.accountId}` === mainAccountId);
+
+      const usersResponse = await axios.get<OldSystemUser[]>("https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance", {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { selectAllSchedules: true },
+      });
+      const remoteUsers = usersResponse.data.filter(user => `main-${user.accountId}` === mainAccountId);
+
+      const mainAccount = await this.accountRepository.findOne({ where: { id: mainAccountId } });
+      if (!mainAccount) throw new ApiError(404, "Main account not found");
+
+      const localUsers = await this.userRepository.find({
+        where: { accountId: mainAccountId },
+        relations: ["account"],
+      });
+
+      const subAccounts = await this.accountRepository.find({
+        where: { parentId: user.accountId },
+        relations: ["users"],
+      });
+
+      const subAccountUsers = await this.userRepository.find({
+        where: subAccounts.map(acc => ({ accountId: acc.id })),
+        relations: ["account"],
+      });
+
+      ws.send(
+        JSON.stringify(
+          new ApiResponse(200, "Organization users retrieved successfully", {
+            admins: admins.map(admin => ({
+              id: `admin-${admin.id}`,
+              firstName: admin.firstname,
+              lastName: admin.surname,
+              email: admin.email,
+              phone: admin.phone,
+              role: "admin",
+              adminType: "unlimited",
+              accountId: mainAccountId,
+              accountName: user.account.name,
+              accountType: user.account.type,
+            })),
+            users: remoteUsers.map(user => ({
+              id: `user-${user.id}`,
+              firstName: user.firstname || "Unknown",
+              lastName: user.surname || "User",
+              email: user.email,
+              phone: user.phone || "N/A",
+              role: "user",
+              accountId: mainAccountId,
+              accountName: mainAccount.name,
+              accountType: mainAccount.type,
+            })),
+            localUsers: [...localUsers, ...subAccountUsers].map(user => ({
+              id: user.id,
+              firstName: user.firstName,
+              lastName: user.lastName,
+              email: user.email,
+              phone: user.phone,
+              role: user.role,
+              adminType: user.adminType,
+              accountId: user.accountId,
+              accountName: user.account.name,
+              accountType: user.account.type,
+            })),
+          })
+        )
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to retrieve organization users";
+      ws.send(JSON.stringify(new ApiError(500, message)));
     }
   }
 }

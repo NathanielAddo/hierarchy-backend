@@ -1,51 +1,57 @@
+import axios from "axios";
 import { AppDataSource } from "../db";
-import { User } from "../entities/user.entity";
-import * as bcrypt from "bcrypt";
-import * as jwt from "jsonwebtoken";
+import { Geo_User } from "../entities/user.entity";
 import { ApiResponse, ApiError } from "../utils/apiResponse";
 
 export class AuthController {
-  private userRepository = AppDataSource.getRepository(User);
+  private userRepository = AppDataSource.getRepository(Geo_User);
 
   public async login(ws: any, data: { email: string; password: string }) {
     try {
       const { email, password } = data;
-      const user = await this.userRepository.findOne({
-        where: { email },
+
+      // Call old system's login endpoint
+      const loginResponse = await axios.post("https://db-api-v2.akwaabasoftware.com/clients/login", {
+        email,
+        password,
+      });
+
+      const { token, user } = loginResponse.data;
+
+      // Verify user exists in new system and is an admin
+      const localUser = await this.userRepository.findOne({
+        where: { email: user.email, role: "admin" },
         relations: ["account"],
       });
 
-      if (!user || !(await bcrypt.compare(password, user.password))) {
-        throw new ApiError(401, "Invalid credentials");
+      if (!localUser) {
+        throw new ApiError(401, "Only admins can log in to this system");
       }
-
-      const token = jwt.sign(
-        { id: user.id, email: user.email, role: user.role, accountId: user.accountId },
-        process.env.JWT_SECRET || "secret",
-        { expiresIn: "1h" }
-      );
 
       ws.send(
         JSON.stringify(
           new ApiResponse(200, "Login successful", {
             token,
             user: {
-              id: user.id,
-              email: user.email,
-              firstName: user.firstName,
-              lastName: user.lastName,
-              role: user.role,
-              adminType: user.adminType,
-              accountId: user.accountId,
-              accountName: user.account.name,
-              accountType: user.account.type,
+              id: localUser.id,
+              email: localUser.email,
+              firstName: localUser.firstName,
+              lastName: localUser.lastName,
+              role: localUser.role,
+              adminType: localUser.adminType,
+              accountId: localUser.accountId,
+              accountName: localUser.account.name,
+              accountType: localUser.account.type,
             },
           })
         )
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Login failed";
-      ws.send(JSON.stringify(new ApiError(500, message)));
+      let errorMessage = "Login failed";
+      if (axios.isAxiosError(error) && error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      }
+      ws.send(JSON.stringify(new ApiError(401, errorMessage)));
     }
   }
 

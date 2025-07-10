@@ -1,8 +1,8 @@
 import { Entity, Column, PrimaryGeneratedColumn, ManyToOne } from "typeorm";
-import { Account } from "./account.entity";
+import { Geo_Account } from "./account.entity";
 
-@Entity( )
-export class User {
+@Entity()
+export class Geo_User {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
@@ -18,18 +18,15 @@ export class User {
   @Column()
   phone!: string;
 
-  @Column()
-  password!: string;
-
   @Column({ type: "varchar" })
   role!: "admin" | "user";
 
   @Column({ type: "varchar", nullable: true })
   adminType?: "limited" | "unlimited";
 
-  @Column()
+  @Column({ type: "uuid" })
   accountId!: string;
 
-  @ManyToOne(() => Account, (account) => account.users)
-  account!: Account;
+  @ManyToOne(() => Geo_Account, (account) => account.users)
+  account!: Geo_Account;
 }

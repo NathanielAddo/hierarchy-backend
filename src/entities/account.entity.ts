@@ -1,29 +1,35 @@
 import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, OneToMany } from "typeorm";
-import { User } from "./user.entity";
+import { Geo_User } from "./user.entity";
 
 @Entity()
-export class Account {
+export class Geo_Account {
   @PrimaryGeneratedColumn("uuid")
-  id?: string;
+  id!: string;
 
   @Column()
-  name?: string;
+  name!: string;
+
+  @Column({ type: "text", nullable: true })
+  description!: string | null;
 
   @Column({ type: "varchar" })
-  type?: "main" | "institutional" | "regional" | "district" | "branch" | "department";
+  type!: string;
 
-  @Column({ nullable: true })
-  parentId?: string;
-
-  @ManyToOne(() => Account, { nullable: true })
-  parent?: Account;
-
-  @OneToMany(() => Account, (account) => account.parent)
-  children?: Account[];
+  @Column({ type: "uuid", nullable: true })
+  parentId!: string | null;
 
   @Column()
-  country?: string;
+  country!: string;
 
-  @OneToMany(() => User, (user) => user.account)
-  users?: User[];
+  @Column({ type: "varchar", length: 36, nullable: true })
+  primaryAdminId!: string | null;
+
+  @ManyToOne(() => Geo_Account, (account) => account.children, { nullable: true })
+  parent!: Geo_Account | null;
+
+  @OneToMany(() => Geo_Account, (account) => account.parent)
+  children!: Geo_Account[];
+
+  @OneToMany(() => Geo_User, (user) => user.account)
+  users!: Geo_User[];
 }
