@@ -36,7 +36,7 @@ export const AppDataSource = new DataSource({
     : false,
   entities: [Account, User],
   migrations: ["dist/migrations/**/*.js"],
-  synchronize: false, // Set to false in production
+  synchronize: true, // Set to false in production
 });
 
 export const initializeDatabase = async () => {
