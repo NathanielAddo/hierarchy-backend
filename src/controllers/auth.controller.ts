@@ -11,7 +11,6 @@ export class AuthController {
       const { email, password } = data;
       console.log('Login attempt:', { email });
 
-      // Call external API
       const loginResponse = await axios.post("https://db-api-v2.akwaabasoftware.com/clients/login", {
         email,
         password,
@@ -20,7 +19,6 @@ export class AuthController {
 
       const { token, user } = loginResponse.data;
 
-      // Verify user in local database
       const localUser = await this.userRepository.findOne({
         where: { email: user.email, role: "admin" },
         relations: ["account"],
