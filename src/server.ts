@@ -14,8 +14,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const PING_INTERVAL = 20000;
-const CONNECTION_TIMEOUT = 30000;
-const MAX_MESSAGE_SIZE = 1024 * 1024;
+const CONNECTION_TIMEOUT = 60000;
 
 interface Message {
   token: string;
@@ -49,7 +48,7 @@ const channels: Record<string, Set<WebSocket>> = {};
 const server = createServer();
 const wss = new WebSocketServer({
   noServer: true,
-  maxPayload: MAX_MESSAGE_SIZE
+  maxPayload: 1024 * 1024
 });
 
 server.on('request', (req, res) => {
