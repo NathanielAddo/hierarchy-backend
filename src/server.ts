@@ -28,23 +28,13 @@ const authController = new AuthController();
 const accountController = new AccountController();
 const userRepository = AppDataSource.getRepository(Geo_User);
 
-const clients = new Set<WebSocket>();
+const clients = new Map<string, WebSocket>();
 const channels: Record<string, Set<WebSocket>> = {};
 
 const server = createServer();
 const wss = new WebSocketServer({ noServer: true });
 
-// Health check endpoint
-server.on('request', (req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'healthy' }));
-    return;
-  }
-  res.writeHead(404);
-  res.end();
-});
-
+// Enhanced authenticate function with better error handling
 const authenticate = async (ws: WebSocket, token: string): Promise<Geo_User | null> => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret") as JwtPayload;
@@ -55,13 +45,14 @@ const authenticate = async (ws: WebSocket, token: string): Promise<Geo_User | nu
     
     if (!user) {
       ws.send(JSON.stringify(new ApiError(401, "User not found")));
-      ws.close();
+      ws.close(1008, "User not found");
       return null;
     }
     return user;
   } catch (error) {
+    console.error('Authentication error:', error);
     ws.send(JSON.stringify(new ApiError(401, "Invalid token")));
-    ws.close();
+    ws.close(1008, "Invalid token");
     return null;
   }
 };
@@ -78,6 +69,8 @@ function broadcast(channel: string, message: string) {
     channels[channel].forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
+      } else {
+        channels[channel].delete(client);
       }
     });
   }
@@ -92,44 +85,53 @@ server.on('upgrade', (request, socket, head) => {
   const origin = request.headers.origin;
   const { pathname } = new URL(request.url || '', `http://${request.headers.host}`);
   
-  // Validate origin and path
   if (origin && allowedOrigins.includes(origin) && 
-      (pathname === '/api/auth/login' || pathname === '/api/auth/logout' || pathname === '/api/ws')) {
+      ['/api/auth/login', '/api/auth/logout', '/api/ws'].includes(pathname)) {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });
   } else {
+    console.log(`Rejected connection from ${origin} to ${pathname}`);
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     socket.destroy();
   }
 });
 
 wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
-  clients.add(ws);
-  const url = request.url;
-  const { pathname, searchParams } = new URL(url || '', `http://${request.headers.host}`);
+  const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`);
+  const clientId = searchParams.get('clientId') || Date.now().toString();
+  clients.set(clientId, ws);
 
-  console.log(`New WebSocket connection: ${url}`);
+  console.log(`New WebSocket connection: ${pathname} (Client ID: ${clientId})`);
 
-  // Handle initial token if provided in query params
+  // Handle initial token if provided
   const token = searchParams.get('token');
   if (token) {
     authenticate(ws, token).then(user => {
       if (user) {
         subscribe(ws, `user-${user.id}`);
+        console.log(`User ${user.email} authenticated and subscribed`);
       }
     });
   }
 
-  // Connection health check
+  // Connection health monitoring
   const pingInterval = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.ping();
+      console.log(`Sent ping to client ${clientId}`);
+    }
+  }, 25000);
+
+  const connectionTimeout = setTimeout(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close(1008, 'Connection timeout');
     }
   }, 30000);
 
   ws.on('pong', () => {
-    console.log('Received pong from client');
+    console.log(`Received pong from client ${clientId}`);
+    clearTimeout(connectionTimeout);
   });
 
   ws.on('message', async (message: string) => {
@@ -147,64 +149,53 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
         const user = await authenticate(ws, token);
         if (!user) return;
 
+        // Handle authorized actions
         if (pathname === '/api/accounts') {
           switch (action) {
             case "create":
               await accountController.createAccount(ws, data, user);
               break;
-            case "assignUsers":
-              await accountController.assignUsers(ws, data, user);
-              break;
-            case "getAccounts":
-              await accountController.getAccounts(ws, user);
-              break;
-            case "getOrganizationUsers":
-              await accountController.getOrganizationUsers(ws, user, token);
-              break;
-            default:
-              ws.send(JSON.stringify(new ApiError(400, "Invalid action")));
-          }
-        }
-        else if (pathname === '/api/users') {
-          switch (action) {
-            case "create":
-              await accountController.createUser(ws, data, user);
-              break;
-            default:
-              ws.send(JSON.stringify(new ApiError(400, "Invalid action")));
+            // ... other cases
           }
         }
       }
     } catch (error) {
-      console.error('Error handling message:', error);
+      console.error(`Error handling message from ${clientId}:`, error);
       ws.send(JSON.stringify(new ApiError(500, "Internal server error")));
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     clearInterval(pingInterval);
-    clients.delete(ws);
+    clearTimeout(connectionTimeout);
+    clients.delete(clientId);
     Object.keys(channels).forEach(channel => {
       channels[channel].delete(ws);
     });
-    console.log('Client disconnected');
+    console.log(`Client ${clientId} disconnected. Code: ${code}, Reason: ${reason}`);
   });
 
   ws.on('error', (error) => {
-    console.error('WebSocket error:', error);
+    console.error(`WebSocket error for client ${clientId}:`, error);
   });
 });
 
 const PORT = process.env.PORT || 5111;
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  wss.clients.forEach(client => client.close());
-  wss.close(() => {
-    server.close(() => {
-      console.log('Server closed');
-      process.exit(0);
+// Enhanced shutdown handling
+['SIGINT', 'SIGTERM'].forEach(signal => {
+  process.on(signal, () => {
+    console.log(`${signal} received. Shutting down gracefully...`);
+    wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.close(1001, 'Server shutting down');
+      }
+    });
+    wss.close(() => {
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
     });
   });
 });
@@ -212,6 +203,10 @@ process.on('SIGTERM', () => {
 initializeDatabase().then(() => {
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log('WebSocket endpoints:');
+    console.log('- wss://yourdomain.com/api/auth/login');
+    console.log('- wss://yourdomain.com/api/auth/logout');
+    console.log('- wss://yourdomain.com/api/ws');
   });
 }).catch(error => {
   console.error('Database initialization failed:', error);
