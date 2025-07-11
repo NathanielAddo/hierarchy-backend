@@ -27,6 +27,9 @@ export class Geo_User {
   @Column({ type: "uuid" })
   accountId!: string;
 
+  @Column()
+  password!: string;
+
   @ManyToOne(() => Geo_Account, (account) => account.users)
   account!: Geo_Account;
 }
