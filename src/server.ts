@@ -8,6 +8,7 @@ import { ApiError } from "./utils/apiResponse";
 import { AppDataSource } from "./db";
 import { Geo_User } from "./entities/user.entity";
 import { IncomingMessage } from 'http';
+import { URL } from 'url';
 
 interface Message {
   token: string;
@@ -32,6 +33,17 @@ const channels: Record<string, Set<WebSocket>> = {};
 
 const server = createServer();
 const wss = new WebSocketServer({ noServer: true });
+
+// Health check endpoint
+server.on('request', (req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'healthy' }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
 
 const authenticate = async (ws: WebSocket, token: string): Promise<Geo_User | null> => {
   try {
@@ -78,8 +90,11 @@ server.on('upgrade', (request, socket, head) => {
   ];
   
   const origin = request.headers.origin;
+  const { pathname } = new URL(request.url || '', `http://${request.headers.host}`);
   
-  if (origin && allowedOrigins.includes(origin)) {
+  // Validate origin and path
+  if (origin && allowedOrigins.includes(origin) && 
+      (pathname === '/api/auth/login' || pathname === '/api/auth/logout' || pathname === '/api/ws')) {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });
@@ -92,25 +107,47 @@ server.on('upgrade', (request, socket, head) => {
 wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
   clients.add(ws);
   const url = request.url;
+  const { pathname, searchParams } = new URL(url || '', `http://${request.headers.host}`);
 
   console.log(`New WebSocket connection: ${url}`);
+
+  // Handle initial token if provided in query params
+  const token = searchParams.get('token');
+  if (token) {
+    authenticate(ws, token).then(user => {
+      if (user) {
+        subscribe(ws, `user-${user.id}`);
+      }
+    });
+  }
+
+  // Connection health check
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+    }
+  }, 30000);
+
+  ws.on('pong', () => {
+    console.log('Received pong from client');
+  });
 
   ws.on('message', async (message: string) => {
     try {
       const parsedMessage: Message = JSON.parse(message);
       const { token, action, data } = parsedMessage;
 
-      if (url === '/api/auth/login') {
+      if (pathname === '/api/auth/login') {
         await authController.login(ws, data);
       } 
-      else if (url === '/api/auth/logout') {
+      else if (pathname === '/api/auth/logout') {
         await authController.logout(ws);
       } 
       else {
         const user = await authenticate(ws, token);
         if (!user) return;
 
-        if (url === '/api/accounts') {
+        if (pathname === '/api/accounts') {
           switch (action) {
             case "create":
               await accountController.createAccount(ws, data, user);
@@ -128,7 +165,7 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
               ws.send(JSON.stringify(new ApiError(400, "Invalid action")));
           }
         }
-        else if (url === '/api/users') {
+        else if (pathname === '/api/users') {
           switch (action) {
             case "create":
               await accountController.createUser(ws, data, user);
@@ -145,15 +182,32 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
   });
 
   ws.on('close', () => {
+    clearInterval(pingInterval);
     clients.delete(ws);
     Object.keys(channels).forEach(channel => {
       channels[channel].delete(ws);
     });
     console.log('Client disconnected');
   });
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+  });
 });
 
 const PORT = process.env.PORT || 5111;
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  wss.clients.forEach(client => client.close());
+  wss.close(() => {
+    server.close(() => {
+      console.log('Server closed');
+      process.exit(0);
+    });
+  });
+});
 
 initializeDatabase().then(() => {
   server.listen(PORT, () => {
@@ -162,14 +216,4 @@ initializeDatabase().then(() => {
 }).catch(error => {
   console.error('Database initialization failed:', error);
   process.exit(1);
-});
-
-process.on('SIGINT', () => {
-  console.log('Shutting down server...');
-  wss.clients.forEach(client => client.close());
-  wss.close(() => {
-    server.close(() => {
-      process.exit(0);
-    });
-  });
 });
