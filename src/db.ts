@@ -43,43 +43,38 @@ export const AppDataSource = new DataSource({
 
 export const initializeDatabase = async () => {
   try {
-    // Initialize database connection
     await AppDataSource.initialize();
     console.log("Database connection established");
 
     const accountRepository = AppDataSource.getRepository(Geo_Account);
     const userRepository = AppDataSource.getRepository(Geo_User);
 
-    // Ensure the account exists (accountId: 180 from curl response)
-    const accountId = "180"; // Use string to match Geo_Account.id type
-    let account = await accountRepository.findOne({ where: { id: accountId } });
+    // Find or create account by name instead of ID
+    let account = await accountRepository.findOne({ 
+      where: { name: "Ministry of Education" }
+    });
+    
     if (!account) {
       account = accountRepository.create({
-        id: accountId,
         name: "Ministry of Education",
         description: "Main account for admin access",
         type: "main",
         parentId: null,
-        country: "Ghana",
-        primaryAdminId: null, // Will be set after user creation
+        country: "Ghana"
       });
       await accountRepository.save(account);
-      console.log("Created account:", account.id);
     }
 
-    // Ensure admin user exists
+    // Admin user setup
     const adminEmail = process.env.ADMIN_EMAIL || "clickcomgh@gmail.com";
     const adminPassword = process.env.ADMIN_PASSWORD || "CLOCK@FACIAL";
-    if (!adminEmail || !adminPassword) {
-      throw new Error("ADMIN_EMAIL or ADMIN_PASSWORD not set in .env");
-    }
-
+    
     let adminUser = await userRepository.findOne({
-      where: { email: adminEmail, role: "admin" },
-      relations: ["account"],
+      where: { email: adminEmail },
+      relations: ["account"]
     });
+
     if (!adminUser) {
-      // Verify credentials with external API
       const loginResponse = await axios.post(
         "https://db-api-v2.akwaabasoftware.com/clients/login",
         {
@@ -87,44 +82,29 @@ export const initializeDatabase = async () => {
           password: adminPassword,
         }
       );
-      console.log("External API response:", loginResponse.data);
 
       const { user } = loginResponse.data;
-      if (user.email !== adminEmail) {
-        throw new Error("External API user email does not match ADMIN_EMAIL");
-      }
-
       adminUser = userRepository.create({
-        id: user.id.toString(), // From curl: id: 296
+        id: uuidv4(), // Generate proper UUID
         firstName: user.firstname || "Daniel",
         lastName: user.surname || "Ansah",
         email: user.email,
         phone: user.phone || "0206007255",
         role: "admin",
         adminType: "unlimited",
-        accountId: accountId,
-        account: account,
+        accountId: account.id, // Use the account's UUID
+        account: account
       });
       await userRepository.save(adminUser);
-      console.log("Created admin user:", adminUser.email);
 
-      // Update account with primaryAdminId
+      // Update account primary admin
       account.primaryAdminId = adminUser.id;
       await accountRepository.save(account);
-      console.log("Updated account with primaryAdminId:", account.id);
-    } else {
-      console.log("Admin user already exists:", adminUser.email);
     }
 
     console.log("Database initialization completed successfully");
   } catch (error) {
     console.error("Database initialization failed:", error);
-    if (axios.isAxiosError(error)) {
-      console.error("Axios error details:", {
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-    }
     throw error;
   }
 };
