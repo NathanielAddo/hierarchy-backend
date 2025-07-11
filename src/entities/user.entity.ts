@@ -1,9 +1,9 @@
-import { Entity, Column, PrimaryGeneratedColumn, ManyToOne } from "typeorm";
+import { Entity, Column, PrimaryColumn, ManyToOne } from "typeorm";
 import { Geo_Account } from "./account.entity";
 
 @Entity()
 export class Geo_User {
-  @PrimaryGeneratedColumn("uuid")
+  @PrimaryColumn({ type: 'varchar', length: 255 })
   id!: string;
 
   @Column()

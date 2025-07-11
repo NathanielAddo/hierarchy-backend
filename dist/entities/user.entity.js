@@ -16,7 +16,7 @@ let Geo_User = class Geo_User {
 };
 exports.Geo_User = Geo_User;
 __decorate([
-    (0, typeorm_1.PrimaryGeneratedColumn)("uuid"),
+    (0, typeorm_1.PrimaryColumn)({ type: 'varchar', length: 255 }),
     __metadata("design:type", String)
 ], Geo_User.prototype, "id", void 0);
 __decorate([
