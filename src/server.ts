@@ -124,7 +124,7 @@ server.on('upgrade', (request, socket, head) => {
     return;
   }
   const { pathname } = new URL(request.url || '', `http://${request.headers.host}`);
-  const allowedPaths = ['/api/auth/login', '/api/auth/logout', '/api/ws'];
+  const allowedPaths = ['/api/auth/login', '/api/auth/logout', '/api/ws', '/api/accounts'];
   if (!allowedPaths.includes(pathname)) {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
     socket.destroy();
