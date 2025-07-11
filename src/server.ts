@@ -9,14 +9,12 @@ import { AppDataSource } from "./db";
 import { Geo_User } from "./entities/user.entity";
 import { IncomingMessage } from 'http';
 
-// Interface for the parsed WebSocket message
 interface Message {
   token: string;
   action: string;
   data?: any;
 }
 
-// Interface for JWT payload matching User entity
 interface JwtPayload {
   id: string;
   email: string;
@@ -29,15 +27,12 @@ const authController = new AuthController();
 const accountController = new AccountController();
 const userRepository = AppDataSource.getRepository(Geo_User);
 
-// Track connected clients and their subscriptions
 const clients = new Set<WebSocket>();
 const channels: Record<string, Set<WebSocket>> = {};
 
-// Create HTTP server
 const server = createServer();
-const wss = new WebSocketServer({ noServer: true }); // Use noServer: true for custom upgrade handling
+const wss = new WebSocketServer({ noServer: true });
 
-// Authentication middleware
 const authenticate = async (ws: WebSocket, token: string): Promise<Geo_User | null> => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret") as JwtPayload;
@@ -59,7 +54,6 @@ const authenticate = async (ws: WebSocket, token: string): Promise<Geo_User | nu
   }
 };
 
-// Subscribe to channel
 function subscribe(ws: WebSocket, channel: string) {
   if (!channels[channel]) {
     channels[channel] = new Set();
@@ -67,7 +61,6 @@ function subscribe(ws: WebSocket, channel: string) {
   channels[channel].add(ws);
 }
 
-// Broadcast to channel
 function broadcast(channel: string, message: string) {
   if (channels[channel]) {
     channels[channel].forEach(client => {
@@ -78,7 +71,6 @@ function broadcast(channel: string, message: string) {
   }
 }
 
-// Handle HTTP server upgrade for WebSockets
 server.on('upgrade', (request, socket, head) => {
   const allowedOrigins = [
     'https://geo-acc.vercel.app',
@@ -97,27 +89,23 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
-// Handle new WebSocket connections
 wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
   clients.add(ws);
   const url = request.url;
 
   console.log(`New WebSocket connection: ${url}`);
 
-  // Handle messages
   ws.on('message', async (message: string) => {
     try {
       const parsedMessage: Message = JSON.parse(message);
       const { token, action, data } = parsedMessage;
 
-      // Handle authentication routes
       if (url === '/api/auth/login') {
         await authController.login(ws, data);
       } 
       else if (url === '/api/auth/logout') {
         await authController.logout(ws);
       } 
-      // Handle authenticated routes
       else {
         const user = await authenticate(ws, token);
         if (!user) return;
@@ -156,10 +144,8 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
     }
   });
 
-  // Handle connection close
   ws.on('close', () => {
     clients.delete(ws);
-    // Remove from all channels
     Object.keys(channels).forEach(channel => {
       channels[channel].delete(ws);
     });
@@ -167,8 +153,7 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
   });
 });
 
-// Start the server
-const PORT = process.env.PORT || 3111; // Match your Nginx proxy_pass port
+const PORT = process.env.PORT || 3111;
 
 initializeDatabase().then(() => {
   server.listen(PORT, () => {
@@ -179,7 +164,6 @@ initializeDatabase().then(() => {
   process.exit(1);
 });
 
-// Graceful shutdown
 process.on('SIGINT', () => {
   console.log('Shutting down server...');
   wss.clients.forEach(client => client.close());
