@@ -37,7 +37,7 @@ export const AppDataSource = new DataSource({
     : false,
   entities: [Geo_Account, Geo_User],
   migrations: ["dist/migrations/**/*.js"],
-  synchronize: process.env.NODE_ENV !== "production", // Auto-create tables in dev
+  synchronize: false, // Auto-create tables in dev
   logging: true,
 });
 
