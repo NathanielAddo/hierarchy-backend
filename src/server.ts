@@ -1,3 +1,4 @@
+import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { initializeDatabase } from "./db";
 import { AuthController } from "./controllers/auth.controller";
@@ -7,7 +8,6 @@ import { ApiError } from "./utils/apiResponse";
 import { AppDataSource } from "./db";
 import { Geo_User } from "./entities/user.entity";
 import { IncomingMessage } from 'http';
-import { Server } from 'http';
 
 // Interface for the parsed WebSocket message
 interface Message {
@@ -34,8 +34,8 @@ const clients = new Set<WebSocket>();
 const channels: Record<string, Set<WebSocket>> = {};
 
 // Create HTTP server
-const server = new Server();
-const wss = new WebSocketServer({ server });
+const server = createServer();
+const wss = new WebSocketServer({ noServer: true }); // Use noServer: true for custom upgrade handling
 
 // Authentication middleware
 const authenticate = async (ws: WebSocket, token: string): Promise<Geo_User | null> => {
@@ -78,12 +78,31 @@ function broadcast(channel: string, message: string) {
   }
 }
 
-// Handle new connections
-wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-  clients.add(ws);
-  const url = req.url;
+// Handle HTTP server upgrade for WebSockets
+server.on('upgrade', (request, socket, head) => {
+  const allowedOrigins = [
+    'https://geo-acc.vercel.app',
+    'http://localhost:3000'
+  ];
+  
+  const origin = request.headers.origin;
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+  }
+});
 
-  console.log(`New connection: ${url}`);
+// Handle new WebSocket connections
+wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
+  clients.add(ws);
+  const url = request.url;
+
+  console.log(`New WebSocket connection: ${url}`);
 
   // Handle messages
   ws.on('message', async (message: string) => {
@@ -91,40 +110,44 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       const parsedMessage: Message = JSON.parse(message);
       const { token, action, data } = parsedMessage;
 
-      if (url === '/api/auth/logout') {
+      // Handle authentication routes
+      if (url === '/api/auth/login') {
+        await authController.login(ws, data);
+      } 
+      else if (url === '/api/auth/logout') {
         await authController.logout(ws);
       } 
-      else if (url === '/api/accounts') {
+      // Handle authenticated routes
+      else {
         const user = await authenticate(ws, token);
         if (!user) return;
 
-        switch (action) {
-          case "create":
-            await accountController.createAccount(ws, data, user);
-            break;
-          case "assignUsers":
-            await accountController.assignUsers(ws, data, user);
-            break;
-          case "getAccounts":
-            await accountController.getAccounts(ws, user);
-            break;
-          case "getOrganizationUsers":
-            await accountController.getOrganizationUsers(ws, user, token);
-            break;
-          default:
-            ws.send(JSON.stringify(new ApiError(400, "Invalid action")));
+        if (url === '/api/accounts') {
+          switch (action) {
+            case "create":
+              await accountController.createAccount(ws, data, user);
+              break;
+            case "assignUsers":
+              await accountController.assignUsers(ws, data, user);
+              break;
+            case "getAccounts":
+              await accountController.getAccounts(ws, user);
+              break;
+            case "getOrganizationUsers":
+              await accountController.getOrganizationUsers(ws, user, token);
+              break;
+            default:
+              ws.send(JSON.stringify(new ApiError(400, "Invalid action")));
+          }
         }
-      }
-      else if (url === '/api/users') {
-        const user = await authenticate(ws, token);
-        if (!user) return;
-
-        switch (action) {
-          case "create":
-            await accountController.createUser(ws, data, user);
-            break;
-          default:
-            ws.send(JSON.stringify(new ApiError(400, "Invalid action")));
+        else if (url === '/api/users') {
+          switch (action) {
+            case "create":
+              await accountController.createUser(ws, data, user);
+              break;
+            default:
+              ws.send(JSON.stringify(new ApiError(400, "Invalid action")));
+          }
         }
       }
     } catch (error) {
@@ -144,9 +167,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
+// Start the server
+const PORT = process.env.PORT || 3111; // Match your Nginx proxy_pass port
 
-// Initialize database and start server
 initializeDatabase().then(() => {
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
