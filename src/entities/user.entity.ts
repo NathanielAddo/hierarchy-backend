@@ -3,7 +3,7 @@ import { Geo_Account } from "./account.entity";
 
 @Entity()
 export class Geo_User {
-  @PrimaryColumn({ type: 'varchar', length: 255 })
+  @PrimaryColumn('uuid', { default: () => 'uuid_generate_v4()' })
   id!: string;
 
   @Column()
