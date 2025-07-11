@@ -115,12 +115,10 @@ function cleanupClient(clientId: string) {
 }
 
 server.on('upgrade', (request, socket, head) => {
-  const allowedOrigins = [
-    'https://geo-acc.vercel.app',
-    'http://localhost:3000'
-  ];
-  const origin = request.headers.origin;
-  if (!origin || !allowedOrigins.includes(origin)) {
+  const allowedOrigins = ['https://geo-acc.vercel.app', 'http://localhost:3000', null];
+  const origin = request.headers.origin ?? null;
+  if (!allowedOrigins.includes(origin)) {
+    console.log(`Forbidden origin: ${origin}`);
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     socket.destroy();
     return;
@@ -141,7 +139,7 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
   const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`);
   const clientId = searchParams.get('clientId') || `conn_${Date.now()}`;
   const ip = request.socket.remoteAddress;
-  console.log(`New connection: ${clientId} from ${ip} to ${pathname}`);
+  console.log(`New connection: ${clientId} from ${ip} to ${pathname} with origin ${request.headers.origin ?? 'none'}`);
   let isAlive = true;
   const pingInterval = setInterval(() => {
     if (!isAlive) {
@@ -185,14 +183,14 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
         return;
       }
       const parsedMessage: Message = JSON.parse(messageStr);
-      const { token, action, data } = parsedMessage;
+      console.log(`Received message from ${clientId}:`, parsedMessage);
       if (pathname === '/api/auth/login') {
-        await authController.login(ws, data);
+        await authController.login(ws, parsedMessage.data);
       } else if (pathname === '/api/auth/logout') {
         await authController.logout(ws);
         cleanupClient(clientId);
       } else {
-        const user = await authenticate(ws, token);
+        const user = await authenticate(ws, parsedMessage.token);
         if (!user) return;
       }
     } catch (error) {
