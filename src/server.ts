@@ -171,15 +171,21 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
     isAlive = true;
     clearTimeout(timeout);
   });
-  ws.on('message', async (message: string) => {
+  ws.on('message', async (message: string | Buffer) => {
     try {
-      if (message === 'ping') {
+      const messageStr = message.toString();
+      if (messageStr === 'ping') {
         ws.send('pong');
         isAlive = true;
         console.log(`Received ping from ${clientId}, sent pong`);
         return;
       }
-      const parsedMessage: Message = JSON.parse(message);
+      if (messageStr === 'pong') {
+        isAlive = true;
+        console.log(`Received pong from ${clientId}`);
+        return;
+      }
+      const parsedMessage: Message = JSON.parse(messageStr);
       const { token, action, data } = parsedMessage;
       if (pathname === '/api/auth/login') {
         await authController.login(ws, data);
