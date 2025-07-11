@@ -153,7 +153,7 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
   });
 });
 
-const PORT = process.env.PORT || 3111;
+const PORT = process.env.PORT || 5111;
 
 initializeDatabase().then(() => {
   server.listen(PORT, () => {
