@@ -168,36 +168,62 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
     isAlive = true;
     clearTimeout(timeout);
   });
-  ws.on('message', async (message: string | Buffer) => {
-    try {
-      const messageStr = message.toString();
-      if (messageStr === 'ping') {
-        ws.send('pong');
-        isAlive = true;
-        console.log(`Received ping from ${clientId}, sent pong`);
-        return;
-      }
-      if (messageStr === 'pong') {
-        isAlive = true;
-        console.log(`Received pong from ${clientId}`);
-        return;
-      }
-      const parsedMessage: Message = JSON.parse(messageStr);
-      console.log(`Received message from ${clientId}:`, parsedMessage);
-      if (pathname === '/api/auth/login') {
-        await authController.login(ws, parsedMessage.data);
-      } else if (pathname === '/api/auth/logout') {
-        await authController.logout(ws);
-        cleanupClient(clientId);
-      } else {
-        const user = await authenticate(ws, parsedMessage.token);
-        if (!user) return;
-      }
-    } catch (error) {
-      console.error(`Message error from ${clientId}:`, error);
-      ws.send(JSON.stringify(new ApiError(500, "Internal server error")));
+ ws.on('message', async (message: string | Buffer) => {
+  try {
+    const messageStr = message.toString();
+    if (messageStr === 'ping') {
+      ws.send('pong');
+      isAlive = true;
+      console.log(`Received ping from ${clientId}, sent pong`);
+      return;
     }
-  });
+    if (messageStr === 'pong') {
+      isAlive = true;
+      console.log(`Received pong from ${clientId}`);
+      return;
+    }
+
+    const parsedMessage: Message = JSON.parse(messageStr);
+    console.log(`Received message from ${clientId}:`, parsedMessage);
+
+    // Route messages based on pathname
+    if (pathname === '/api/auth/login') {
+      await authController.login(ws, parsedMessage.data);
+    } else if (pathname === '/api/auth/logout') {
+      await authController.logout(ws);
+      cleanupClient(clientId);
+    } else if (pathname === '/api/accounts') {
+      // Handle account-specific operations
+      const user = await authenticate(ws, parsedMessage.token);
+      if (!user) return;
+
+      switch (parsedMessage.action) {
+        case 'getAccounts':
+          await accountController.getAccounts(ws, user);
+          break;
+        case 'getOrganizationUsers':
+          await accountController.getOrganizationUsers(ws, user, parsedMessage.token);
+          break;
+        case 'assignUsers':
+          await accountController.assignUsers(ws, parsedMessage.data, user);
+          break;
+        case 'create':
+          await accountController.createAccount(ws, parsedMessage.data, user);
+          break;
+        default:
+          ws.send(JSON.stringify(new ApiError(400, "Invalid action for accounts endpoint")));
+      }
+    } else {
+      // Handle other WebSocket endpoints
+      const user = await authenticate(ws, parsedMessage.token);
+      if (!user) return;
+      // Add additional endpoint handlers here if needed
+    }
+  } catch (error) {
+    console.error(`Message error from ${clientId}:`, error);
+    ws.send(JSON.stringify(new ApiError(500, "Internal server error")));
+  }
+});
   ws.on('close', (code, reason) => {
     console.log(`Closed: ${clientId}, Code: ${code}, Reason: ${reason.toString()}`);
     cleanupClient(clientId);
