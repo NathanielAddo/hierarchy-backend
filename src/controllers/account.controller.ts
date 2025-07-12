@@ -538,7 +538,7 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
       // Fetch users from attendance endpoint
       logger.debug("Fetching schedules for user data");
       const schedulesResponse = await axios.get<Schedule[]>(
-        "https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/schedules",
+        "https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance",
         { headers: { Authorization: `Token ${token}` } }
       );
       logger.info("Found schedules", { count: schedulesResponse.data.length });
@@ -553,7 +553,7 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
           batch.map(scheduleId =>
             axios.get<AttendanceRecord[]>(
               `https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance?scheduleId=${scheduleId}&start_date=2000-01-01&end_date=2100-01-01`,
-              { headers: { Authorization: `Bearer ${token}` } }
+              { headers: { Authorization: `Token ${token}` } }
             )
           )
         );
