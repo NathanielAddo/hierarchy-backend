@@ -26,6 +26,32 @@ interface OldSystemUser {
   phone?: string;
 }
 
+interface AttendanceRecord {
+  memberId: string;
+  firstname?: string;
+  surname?: string;
+  phone?: string;
+  email?: string;
+}
+
+interface Schedule {
+  id: string;
+  [key: string]: any;
+}
+
+interface UnifiedUser {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  role: "admin" | "user";
+  adminType?: "limited" | "unlimited";
+  accountId: string;
+  accountName?: string;
+  accountType?: string;
+}
+
 export class AccountController {
   private accountRepository = AppDataSource.getRepository(Geo_Account);
   private userRepository = AppDataSource.getRepository(Geo_User);
@@ -247,7 +273,7 @@ export class AccountController {
     }
   }
 
-  public async getOrganizationUsers(ws: WebSocket, user: Geo_User, token: string) {
+ public async getOrganizationUsers(ws: WebSocket, user: Geo_User, token: string) {
     try {
       if (user.role !== "admin") {
         throw new ApiError(403, "Only admins can view organization users");
@@ -256,17 +282,72 @@ export class AccountController {
       const mainAccountId = user.account.type === "main" ? user.accountId : (await this.getMainAccount(user.accountId))?.id;
       if (!mainAccountId) throw new ApiError(404, "Main account not found");
 
-      const adminsResponse = await axios.get<OldSystemAdmin[]>("https://db-api-v2.akwaabasoftware.com/clients/user", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      // 1. Fetch Admins from /clients/user
+      const adminsResponse = await axios.get<OldSystemAdmin[]>(
+        "https://db-api-v2.akwaabasoftware.com/clients/user",
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       const admins = adminsResponse.data.filter(admin => `main-${admin.accountId}` === mainAccountId);
 
-      const usersResponse = await axios.get<OldSystemUser[]>("https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance", {
-        headers: { Authorization: `Bearer ${token}` },
-        params: { selectAllSchedules: true },
-      });
-      const remoteUsers = usersResponse.data.filter(user => `main-${user.accountId}` === mainAccountId);
+      // 2. Fetch Users from Attendance Endpoint
+      const schedulesResponse = await axios.get<Schedule[]>(
+        "https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/schedules",
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
 
+      const scheduleIds = schedulesResponse.data.map(schedule => schedule.id);
+      const attendanceUsers: AttendanceRecord[] = [];
+
+      // Batch process schedules
+      const batchSize = 5;
+      for (let i = 0; i < scheduleIds.length; i += batchSize) {
+        const batch = scheduleIds.slice(i, i + batchSize);
+        const batchResponses = await Promise.all(
+          batch.map(scheduleId => 
+            axios.get<AttendanceRecord[]>(
+              `https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance?scheduleId=${scheduleId}`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            )
+          )
+        );
+
+        batchResponses.forEach(response => {
+          response.data.forEach(record => {
+            if (record.memberId) {
+              attendanceUsers.push({
+                memberId: record.memberId,
+                firstname: record.firstname,
+                surname: record.surname,
+                phone: record.phone,
+                email: record.email,
+              });
+            }
+          });
+        });
+      }
+
+      // Deduplicate users by phone number
+      const phoneUserMap = new Map<string, AttendanceRecord>();
+      attendanceUsers
+        .filter(user => user.phone)
+        .forEach(user => {
+          if (user.phone) {
+            phoneUserMap.set(user.phone, user);
+          }
+        });
+
+      const uniqueUsers: UnifiedUser[] = Array.from(phoneUserMap.values())
+        .map(user => ({
+          id: `user-${user.memberId}`,
+          firstName: user.firstname || "Unknown",
+          lastName: user.surname || "User",
+          email: user.email || "",
+          phone: user.phone || "",
+          role: "user" as const,
+          accountId: mainAccountId,
+        }));
+
+      // 3. Get local users
       const mainAccount = await this.accountRepository.findOne({ where: { id: mainAccountId } });
       if (!mainAccount) throw new ApiError(404, "Main account not found");
 
@@ -285,44 +366,51 @@ export class AccountController {
         relations: ["account"],
       });
 
+      // Create unified response with explicit types
+      const responseUsers: UnifiedUser[] = [
+        ...admins.map(admin => ({
+          id: `admin-${admin.id}`,
+          firstName: admin.firstname,
+          lastName: admin.surname,
+          email: admin.email,
+          phone: admin.phone,
+          role: "admin" as const,
+          adminType: "unlimited" as const, // Explicitly type as "unlimited"
+          accountId: mainAccountId,
+          accountName: user.account.name,
+          accountType: user.account.type,
+        })),
+        ...uniqueUsers,
+        ...localUsers.map(user => ({
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone,
+          role: user.role as "admin" | "user",
+          adminType: user.adminType as "limited" | "unlimited" | undefined, // Explicit type assertion
+          accountId: user.accountId,
+          accountName: user.account.name,
+          accountType: user.account.type,
+        })),
+        ...subAccountUsers.map(user => ({
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone,
+          role: user.role as "admin" | "user",
+          adminType: user.adminType as "limited" | "unlimited" | undefined, // Explicit type assertion
+          accountId: user.accountId,
+          accountName: user.account.name,
+          accountType: user.account.type,
+        }))
+      ];
+
       ws.send(
         JSON.stringify(
           new ApiResponse(200, "Organization users retrieved successfully", {
-            admins: admins.map(admin => ({
-              id: `admin-${admin.id}`,
-              firstName: admin.firstname,
-              lastName: admin.surname,
-              email: admin.email,
-              phone: admin.phone,
-              role: "admin",
-              adminType: "unlimited",
-              accountId: mainAccountId,
-              accountName: user.account.name,
-              accountType: user.account.type,
-            })),
-            users: remoteUsers.map(user => ({
-              id: `user-${user.id}`,
-              firstName: user.firstname || "Unknown",
-              lastName: user.surname || "User",
-              email: user.email,
-              phone: user.phone || "N/A",
-              role: "user",
-              accountId: mainAccountId,
-              accountName: mainAccount.name,
-              accountType: mainAccount.type,
-            })),
-            localUsers: [...localUsers, ...subAccountUsers].map(user => ({
-              id: user.id,
-              firstName: user.firstName,
-              lastName: user.lastName,
-              email: user.email,
-              phone: user.phone,
-              role: user.role,
-              adminType: user.adminType,
-              accountId: user.accountId,
-              accountName: user.account.name,
-              accountType: user.account.type,
-            })),
+            users: responseUsers,
           })
         )
       );
