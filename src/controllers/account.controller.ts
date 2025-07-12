@@ -497,23 +497,6 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
       }
       logger.debug("Main account ID", { mainAccountId });
 
-      // Validate token
-      logger.debug("Validating external API token");
-      try {
-        const tokenResponse = await axios.get("https://db-api-v2.akwaabasoftware.com/auth/verify", {
-          headers: { Authorization: `Token ${token}` },
-        });
-        if (!tokenResponse.data.valid) {
-          logger.error("Invalid external API token");
-          throw new ApiError(401, "Invalid external API token");
-        }
-      } catch (error) {
-        logger.error("Token validation failed", {
-          error: error instanceof Error ? error.message : "Unknown error",
-          stack: error instanceof Error ? error.stack : undefined,
-        });
-        throw new ApiError(401, "Invalid external API token");
-      }
 
       // Fetch admins with pagination
       logger.debug("Fetching admins from external API");
