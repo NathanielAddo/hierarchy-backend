@@ -522,7 +522,7 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
       const pageSize = 100;
       while (true) {
         const adminsResponse = await axios.get<OldSystemAdmin[]>(
-          `https://db-api-v2.akwaabasoftware.com/clients/user?page=${page}&limit=${pageSize}`,
+          `https://db-api-v2.akwaabasoftware.com/clients/user`,
           { headers: { Authorization: `Token ${token}` } }
         );
         const pageAdmins = adminsResponse.data.filter(
