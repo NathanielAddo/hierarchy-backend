@@ -246,7 +246,7 @@ export class AccountController {
     return account;
   }
 
-  public async getAccounts(ws: WebSocket, user: Geo_User) {
+ public async getAccounts(ws: WebSocket, user: Geo_User) {
     try {
       let accounts;
       if (user.account.type === "main" && user.adminType === "unlimited") {
@@ -266,39 +266,73 @@ export class AccountController {
           .getMany();
       }
 
-      ws.send(JSON.stringify(new ApiResponse(200, "Accounts retrieved successfully", accounts)));
+      console.log('Preparing accounts response:', { 
+        count: accounts.length,
+        sampleAccount: accounts.length > 0 ? {
+          id: accounts[0].id,
+          name: accounts[0].name,
+          type: accounts[0].type,
+          usersCount: accounts[0].users?.length || 0
+        } : null
+      });
+
+      const response = new ApiResponse(200, "Accounts retrieved successfully", accounts);
+      console.log('Sending accounts response:', {
+        statusCode: response.status,
+        message: response.message,
+        dataCount: Array.isArray(response.data) ? response.data.length : 1
+      });
+
+      ws.send(JSON.stringify(response));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Failed to retrieve accounts";
+      console.error('Error in getAccounts:', {
+        error: message,
+        stack: error instanceof Error ? error.stack : undefined
+      });
       ws.send(JSON.stringify(new ApiError(500, message)));
     }
   }
 
- public async getOrganizationUsers(ws: WebSocket, user: Geo_User, token: string) {
+  public async getOrganizationUsers(ws: WebSocket, user: Geo_User, token: string) {
     try {
       if (user.role !== "admin") {
         throw new ApiError(403, "Only admins can view organization users");
       }
 
+      console.log('Starting getOrganizationUsers for user:', {
+        userId: user.id,
+        accountType: user.account.type,
+        adminType: user.adminType
+      });
+
       const mainAccountId = user.account.type === "main" ? user.accountId : (await this.getMainAccount(user.accountId))?.id;
       if (!mainAccountId) throw new ApiError(404, "Main account not found");
 
-      // 1. Fetch Admins from /clients/user
+      console.log('Main account ID:', mainAccountId);
+
+      // 1. Fetch Admins from external API
+      console.log('Fetching admins from external API...');
       const adminsResponse = await axios.get<OldSystemAdmin[]>(
         "https://db-api-v2.akwaabasoftware.com/clients/user",
-        { headers: { Authorization: `Bearer ${token}` } }
+        { headers: { Authorization: `Token ${token}` } }
       );
       const admins = adminsResponse.data.filter(admin => `main-${admin.accountId}` === mainAccountId);
+      console.log('Received admins:', { count: admins.length });
 
       // 2. Fetch Users from Attendance Endpoint
+      console.log('Fetching schedules for user data...');
       const schedulesResponse = await axios.get<Schedule[]>(
         "https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/schedules",
-        { headers: { Authorization: `Bearer ${token}` } }
+        { headers: { Authorization: `Token ${token}` } }
       );
+      console.log('Found schedules:', { count: schedulesResponse.data.length });
 
       const scheduleIds = schedulesResponse.data.map(schedule => schedule.id);
       const attendanceUsers: AttendanceRecord[] = [];
 
       // Batch process schedules
+      console.log('Processing attendance records in batches...');
       const batchSize = 5;
       for (let i = 0; i < scheduleIds.length; i += batchSize) {
         const batch = scheduleIds.slice(i, i + batchSize);
@@ -306,7 +340,7 @@ export class AccountController {
           batch.map(scheduleId => 
             axios.get<AttendanceRecord[]>(
               `https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance?scheduleId=${scheduleId}`,
-              { headers: { Authorization: `Bearer ${token}` } }
+              { headers: { Authorization: `Token ${token}` } }
             )
           )
         );
@@ -325,6 +359,7 @@ export class AccountController {
           });
         });
       }
+      console.log('Processed attendance records:', { count: attendanceUsers.length });
 
       // Deduplicate users by phone number
       const phoneUserMap = new Map<string, AttendanceRecord>();
@@ -346,8 +381,10 @@ export class AccountController {
           role: "user" as const,
           accountId: mainAccountId,
         }));
+      console.log('Unique users after deduplication:', { count: uniqueUsers.length });
 
       // 3. Get local users
+      console.log('Fetching local users...');
       const mainAccount = await this.accountRepository.findOne({ where: { id: mainAccountId } });
       if (!mainAccount) throw new ApiError(404, "Main account not found");
 
@@ -355,18 +392,21 @@ export class AccountController {
         where: { accountId: mainAccountId },
         relations: ["account"],
       });
+      console.log('Local users found:', { count: localUsers.length });
 
       const subAccounts = await this.accountRepository.find({
         where: { parentId: user.accountId },
         relations: ["users"],
       });
+      console.log('Sub-accounts found:', { count: subAccounts.length });
 
       const subAccountUsers = await this.userRepository.find({
         where: subAccounts.map(acc => ({ accountId: acc.id })),
         relations: ["account"],
       });
+      console.log('Sub-account users found:', { count: subAccountUsers.length });
 
-      // Create unified response with explicit types
+      // Create unified response
       const responseUsers: UnifiedUser[] = [
         ...admins.map(admin => ({
           id: `admin-${admin.id}`,
@@ -375,7 +415,7 @@ export class AccountController {
           email: admin.email,
           phone: admin.phone,
           role: "admin" as const,
-          adminType: "unlimited" as const, // Explicitly type as "unlimited"
+          adminType: "unlimited" as const,
           accountId: mainAccountId,
           accountName: user.account.name,
           accountType: user.account.type,
@@ -388,7 +428,7 @@ export class AccountController {
           email: user.email,
           phone: user.phone,
           role: user.role as "admin" | "user",
-          adminType: user.adminType as "limited" | "unlimited" | undefined, // Explicit type assertion
+          adminType: user.adminType as "limited" | "unlimited" | undefined,
           accountId: user.accountId,
           accountName: user.account.name,
           accountType: user.account.type,
@@ -400,22 +440,34 @@ export class AccountController {
           email: user.email,
           phone: user.phone,
           role: user.role as "admin" | "user",
-          adminType: user.adminType as "limited" | "unlimited" | undefined, // Explicit type assertion
+          adminType: user.adminType as "limited" | "unlimited" | undefined,
           accountId: user.accountId,
           accountName: user.account.name,
           accountType: user.account.type,
         }))
       ];
 
-      ws.send(
-        JSON.stringify(
-          new ApiResponse(200, "Organization users retrieved successfully", {
-            users: responseUsers,
-          })
-        )
-      );
+      console.log('Total users prepared for response:', { count: responseUsers.length });
+      console.log('Sample user data:', responseUsers.length > 0 ? {
+        id: responseUsers[0].id,
+        name: `${responseUsers[0].firstName} ${responseUsers[0].lastName}`,
+        role: responseUsers[0].role,
+        accountName: responseUsers[0].accountName
+      } : null);
+
+      const response = new ApiResponse(200, "Organization users retrieved successfully", {
+        users: responseUsers,
+      });
+      ws.send(JSON.stringify(response));
+      console.log('Organization users response sent successfully');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Failed to retrieve organization users";
+      console.error('Error in getOrganizationUsers:', {
+        error: message,
+        stack: error instanceof Error ? error.stack : undefined,
+        tokenValid: !!token,
+        tokenLength: token?.length
+      });
       ws.send(JSON.stringify(new ApiError(500, message)));
     }
   }
