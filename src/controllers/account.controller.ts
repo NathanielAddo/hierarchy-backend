@@ -538,7 +538,7 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
       // Fetch users from attendance endpoint
       logger.debug("Fetching schedules for user data");
       const schedulesResponse = await axios.get<Schedule[]>(
-        "https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance",
+        "https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/schedule?isRecuring=both&length=100000&branchId=1",
         { headers: { Authorization: `Token ${token}` } }
       );
       logger.info("Found schedules", { count: schedulesResponse.data.length });
