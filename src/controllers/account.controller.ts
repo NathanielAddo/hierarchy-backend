@@ -435,9 +435,11 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
     try {
       let accounts;
       if (user.account.type === "main" && user.adminType === "unlimited") {
+        logger.info("User is unlimited main admin, fetching all accounts.");
         accounts = await this.accountRepository.find({ relations: ["parent", "users"] });
         logger.debug("Fetched all accounts for unlimited main admin", { accountCount: accounts.length });
       } else {
+        logger.info(`User is limited admin, fetching accounts for account: ${user.accountId}`);
         const hierarchy = ["main", "institutional", "regional", "district", "branch", "department"];
         const userAccountLevel = hierarchy.indexOf(user.account.type);
         accounts = await this.accountRepository
@@ -551,7 +553,7 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
           batch.map(scheduleId =>
             axios.get<AttendanceRecord[]>(
               `https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance?scheduleId=${scheduleId}&start_date=2000-01-01&end_date=2100-01-01`,
-              { headers: { Authorization: `Token ${token}` } }
+              { headers: { Authorization: `Bearer ${token}` } }
             )
           )
         );
@@ -657,6 +659,24 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
       uniqueUsers.forEach(user => {
         if (user.phone) {
           allUsers.set(user.phone, user);
+        }
+      });
+
+      // Add local users to the response
+      localUsers.forEach(localUser => {
+        if (localUser.phone) {
+          allUsers.set(localUser.phone, {
+            id: localUser.id,
+            firstName: localUser.firstName,
+            lastName: localUser.lastName,
+            email: localUser.email,
+            phone: localUser.phone,
+            role: localUser.role,
+            adminType: localUser.adminType,
+            accountId: localUser.accountId,
+            accountName: localUser.account.name,
+            accountType: localUser.account.type,
+          });
         }
       });
 
