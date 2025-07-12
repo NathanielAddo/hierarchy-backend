@@ -523,7 +523,9 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
           `https://db-api-v2.akwaabasoftware.com/clients/user?page=${page}&limit=${pageSize}`,
           { headers: { Authorization: `Token ${token}` } }
         );
-        const pageAdmins = adminsResponse.data.filter(admin => `main-${admin.accountId}` === mainAccountId);
+        const pageAdmins = adminsResponse.data.filter(
+          (admin) => admin.phone && admin.phone.trim() !== ""
+        );
         admins.push(...pageAdmins);
         logger.debug("Fetched admin page", { page, count: pageAdmins.length });
         if (pageAdmins.length < pageSize) break;
@@ -548,7 +550,7 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
         const batchResponses = await Promise.all(
           batch.map(scheduleId =>
             axios.get<AttendanceRecord[]>(
-              `https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance?scheduleId=${scheduleId}`,
+              `https://db-api-v2.akwaabasoftware.com/attendance/meeting-event/attendance?scheduleId=${scheduleId}&start_date=2000-01-01&end_date=2100-01-01`,
               { headers: { Authorization: `Token ${token}` } }
             )
           )
@@ -570,16 +572,16 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
       logger.info("Processed attendance records", { count: attendanceUsers.length });
 
       // Deduplicate by email or memberId
-      const emailUserMap = new Map<string, AttendanceRecord>();
+      const phoneUserMap = new Map<string, AttendanceRecord>();
       attendanceUsers
-        .filter(user => user.email || user.memberId)
+        .filter(user => user.phone && user.phone.trim() !== "")
         .forEach(user => {
-          const key = user.email || user.memberId;
-          if (key) emailUserMap.set(key, user);
+          const key = user.phone!;
+          if (key) phoneUserMap.set(key, user);
         });
 
       // Sync users to local database
-      const uniqueUsers: UnifiedUser[] = Array.from(emailUserMap.values()).map(user => ({
+      const uniqueUsers: UnifiedUser[] = Array.from(phoneUserMap.values()).map(user => ({
         id: `user-${user.memberId}`,
         firstName: sanitizeHtml(user.firstname || "Unknown"),
         lastName: sanitizeHtml(user.surname || "User"),
@@ -633,45 +635,32 @@ public async deleteAccount(ws: WebSocket, data: { accountId: string }, user: Geo
       });
       logger.info("Sub-account users found", { count: subAccountUsers.length });
 
-      const responseUsers: UnifiedUser[] = [
-        ...admins.map(admin => ({
-          id: `admin-${admin.id}`,
-          firstName: sanitizeHtml(admin.firstname),
-          lastName: sanitizeHtml(admin.surname),
-          email: sanitizeHtml(admin.email),
-          phone: sanitizeHtml(admin.phone),
-          role: "admin" as const,
-          adminType: "unlimited" as const,
-          accountId: mainAccountId,
-          accountName: user.account.name,
-          accountType: user.account.type,
-        })),
-        ...uniqueUsers,
-        ...localUsers.map(user => ({
-          id: user.id,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
-          phone: user.phone,
-          role: user.role as "admin" | "user",
-          adminType: user.adminType as "limited" | "unlimited" | undefined,
-          accountId: user.accountId,
-          accountName: user.account.name,
-          accountType: user.account.type,
-        })),
-        ...subAccountUsers.map(user => ({
-          id: user.id,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
-          phone: user.phone,
-          role: user.role as "admin" | "user",
-          adminType: user.adminType as "limited" | "unlimited" | undefined,
-          accountId: user.accountId,
-          accountName: user.account.name,
-          accountType: user.account.type,
-        })),
-      ];
+      const allUsers = new Map<string, UnifiedUser>();
+
+      admins.forEach(admin => {
+        if (admin.phone) {
+          allUsers.set(admin.phone, {
+            id: `admin-${admin.id}`,
+            firstName: sanitizeHtml(admin.firstname),
+            lastName: sanitizeHtml(admin.surname),
+            email: sanitizeHtml(admin.email),
+            phone: sanitizeHtml(admin.phone),
+            role: "admin" as const,
+            adminType: "unlimited" as const,
+            accountId: mainAccountId,
+            accountName: user.account.name,
+            accountType: user.account.type,
+          });
+        }
+      });
+
+      uniqueUsers.forEach(user => {
+        if (user.phone) {
+          allUsers.set(user.phone, user);
+        }
+      });
+
+      const responseUsers: UnifiedUser[] = Array.from(allUsers.values());
 
       logger.info("Total users prepared for response", {
         count: responseUsers.length,
