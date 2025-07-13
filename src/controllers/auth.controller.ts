@@ -59,26 +59,26 @@ export class AuthController {
         process.env.JWT_SECRET!,
         { expiresIn: '1h' }
       );
-      ws.send(
-        JSON.stringify(
-          new ApiResponse(200, 'Login successful', {
-            token,
-            user: {
-              id: localUser.id,
-              email: localUser.email,
-              firstName: localUser.firstName,
-              lastName: localUser.lastName,
-              role: localUser.role,
-              adminType: localUser.adminType,
-              accountId: localUser.accountId,
-              accountName: account.name,
-              accountType: account.type,
-              accountDescription: account.description,
-            },
-          })
-        )
-      );
-      console.log(`Login successful for: ${data.email}, accountId: ${localUser.accountId}`);
+    ws.send(JSON.stringify({
+      status: 200,
+      message: 'Login successful',
+      data: {
+        token,
+        user: {
+          id: localUser.id,
+          email: localUser.email,
+          firstName: localUser.firstName,
+          lastName: localUser.lastName,
+          role: localUser.role,
+          adminType: localUser.adminType,
+          accountId: localUser.accountId,
+          accountName: account.name,
+          accountType: account.type,
+          accountDescription: account.description,
+        },
+      },
+    }));
+    console.log(`Login successful for: ${data.email}, accountId: ${localUser.accountId}`);
     } catch (error) {
       console.error(`Login error for ${data.email}:`, error);
       ws.send(JSON.stringify(new ApiError(500, 'Internal server error')));

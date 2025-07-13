@@ -246,25 +246,22 @@ ws.on('message', async (message: string | Buffer) => {
   try {
     const parsedMessage: WebSocketMessage = JSON.parse(message.toString());
     
-    // Route based on pathname
-    switch (pathname) {
-      case '/api/auth/login':
-        await authController.login(ws, parsedMessage.data);
-        break;
-        
-      case '/api/auth/logout':
-        await authController.logout(ws);
-        break;
-        
-      case '/api/accounts':
-        await handleAccountOperations(ws, parsedMessage, clientId);
-        break;
-        
-      default:
-        ws.send(JSON.stringify(new ApiError(404, 'Endpoint not found')));
+    // Route based on action path
+    if (parsedMessage.action?.startsWith('/auth/login')) {
+      await authController.login(ws, parsedMessage.data);
+    } 
+    else if (parsedMessage.action?.startsWith('/auth/logout')) {
+      await authController.logout(ws);
+    }
+    else if (parsedMessage.action?.startsWith('/accounts')) {
+      await handleAccountOperations(ws, parsedMessage, clientId);
+    }
+    else {
+      ws.send(JSON.stringify(new ApiError(404, 'Endpoint not found')));
     }
   } catch (error) {
-    // Error handling
+    console.error(`Message error from ${clientId}:`, error);
+    ws.send(JSON.stringify(new ApiError(400, 'Invalid message format')));
   }
 });
 
