@@ -14,14 +14,12 @@ import { Geo_Account } from './entities/account.entity';
 
 dotenv.config();
 
-// Constants
 const PING_INTERVAL = 20000;
 const CONNECTION_TIMEOUT = 60000;
-const MAX_PAYLOAD_SIZE = 1024 * 1024; // 1MB
+const MAX_PAYLOAD_SIZE = 1024 * 1024;
 
-// Interfaces
 interface AuthenticatedRequest extends IncomingMessage {
-  user?: Geo_User;  // This should match your client.user type
+  user?: Geo_User;
   clientId?: string;
 }
 
@@ -40,7 +38,14 @@ interface JwtPayload {
   accountId: string;
 }
 
-// Validate environment variables
+interface ClientConnection {
+  ws: WebSocket;
+  pingInterval: NodeJS.Timeout;
+  user?: Geo_User;
+  lastActivity?: number;
+  messageCount?: number;
+}
+
 const requiredEnvVars = ['JWT_SECRET', 'DB_HOST', 'DB_USER', 'DB_PASSWORD'];
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
@@ -49,29 +54,20 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
-// Initialize controllers and repositories
 const authController = new AuthController();
 const accountController = new AccountController();
 const userRepository = AppDataSource.getRepository(Geo_User);
 const accountRepository = AppDataSource.getRepository(Geo_Account);
 
-// Client management
-const clients = new Map<string, { 
-  ws: WebSocket; 
-  pingInterval: NodeJS.Timeout;
-  user?: Geo_User;  // Using undefined instead of null
-}>();
-
+const clients = new Map<string, ClientConnection>();
 const channels: Record<string, Set<WebSocket>> = {};
 
-// Create HTTP server
 const server = createServer();
 const wss = new WebSocketServer({
   noServer: true,
   maxPayload: MAX_PAYLOAD_SIZE
 });
 
-// Health check endpoint
 server.on('request', (req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 
@@ -90,7 +86,6 @@ server.on('request', (req, res) => {
   res.end();
 });
 
-// Authentication middleware
 const authenticate = async (ws: WebSocket, token: string): Promise<Geo_User | undefined> => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
@@ -117,7 +112,6 @@ const authenticate = async (ws: WebSocket, token: string): Promise<Geo_User | un
   }
 };
 
-// Channel management
 function subscribe(ws: WebSocket, channel: string) {
   if (!channels[channel]) {
     channels[channel] = new Set();
@@ -145,7 +139,6 @@ function broadcast(channel: string, message: any) {
   }
 }
 
-// Client cleanup
 function cleanupClient(clientId: string) {
   const client = clients.get(clientId);
   if (client) {
@@ -161,7 +154,6 @@ function cleanupClient(clientId: string) {
 }
 
 server.on('upgrade', (request: AuthenticatedRequest, socket, head) => {
-  // 1. CORS Validation
   const allowedOrigins = ['https://geo-acc.vercel.app', 'http://localhost:3000'];
   const origin = request.headers.origin ?? null;
   
@@ -172,7 +164,6 @@ server.on('upgrade', (request: AuthenticatedRequest, socket, head) => {
     return;
   }
 
-  // 2. Path Validation
   const { pathname } = new URL(request.url || '', `http://${request.headers.host}`);
   const allowedPaths = [
     '/api/ws',
@@ -190,9 +181,7 @@ server.on('upgrade', (request: AuthenticatedRequest, socket, head) => {
     return;
   }
 
-  // 3. Connection Upgrade
   wss.handleUpgrade(request, socket, head, (ws) => {
-    // 4. Add CORS headers to the WebSocket connection
     if (origin && allowedOrigins.includes(origin)) {
       ws.on('headers', (headers) => {
         headers.push('Access-Control-Allow-Origin', origin);
@@ -204,7 +193,6 @@ server.on('upgrade', (request: AuthenticatedRequest, socket, head) => {
   });
 });
 
-// WebSocket connection handler
 wss.on('connection', (ws: WebSocket, request: AuthenticatedRequest) => {
   const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`);
   const clientId = searchParams.get('clientId') || `conn_${Date.now()}`;
@@ -212,7 +200,6 @@ wss.on('connection', (ws: WebSocket, request: AuthenticatedRequest) => {
 
   console.log(`New connection: ${clientId} from ${ip} to ${pathname}`);
 
-  // Connection heartbeat
   let isAlive = true;
   const pingInterval = setInterval(() => {
     if (!isAlive) {
@@ -231,10 +218,13 @@ wss.on('connection', (ws: WebSocket, request: AuthenticatedRequest) => {
     }
   }, PING_INTERVAL);
 
-  // Add client to tracking
-  clients.set(clientId, { ws, pingInterval });
+  clients.set(clientId, { 
+    ws, 
+    pingInterval,
+    lastActivity: Date.now(),
+    messageCount: 0
+  });
 
-  // Initial authentication timeout
   const timeout = setTimeout(() => {
     if (clients.has(clientId)) {
       console.log(`Initial auth timeout for ${clientId}`);
@@ -242,39 +232,96 @@ wss.on('connection', (ws: WebSocket, request: AuthenticatedRequest) => {
     }
   }, CONNECTION_TIMEOUT);
 
-ws.on('message', async (message: string | Buffer) => {
-  try {
-    const parsedMessage: WebSocketMessage = JSON.parse(message.toString());
-    
-    // Route based on action path
-    if (parsedMessage.action?.startsWith('/auth/login')) {
-      await authController.login(ws, parsedMessage.data);
-    } 
-    else if (parsedMessage.action?.startsWith('/auth/logout')) {
-      await authController.logout(ws);
-    }
-    else if (parsedMessage.action?.startsWith('/accounts')) {
-      await handleAccountOperations(ws, parsedMessage, clientId);
-    }
-    else {
-      ws.send(JSON.stringify(new ApiError(404, 'Endpoint not found')));
-    }
-  } catch (error) {
-    console.error(`Message error from ${clientId}:`, error);
-    ws.send(JSON.stringify(new ApiError(400, 'Invalid message format')));
-  }
-});
+  ws.on('message', async (message: string | Buffer) => {
+    try {
+      const messageStr = message.toString();
+      
+      if (messageStr === 'ping') {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send('pong');
+        }
+        return;
+      }
+      
+      if (messageStr === 'pong') {
+        const client = clients.get(clientId);
+        if (client) {
+          client.lastActivity = Date.now();
+          isAlive = true;
+        }
+        return;
+      }
 
-  // Handle account operations
+      const client = clients.get(clientId);
+      if (client && client.messageCount && client.messageCount > 100) {
+        throw new ApiError(429, 'Too many requests');
+      }
+
+      let parsedMessage: WebSocketMessage;
+      try {
+        parsedMessage = JSON.parse(messageStr);
+      } catch (error) {
+        throw new ApiError(400, 'Invalid JSON format');
+      }
+
+      if (!parsedMessage.action || typeof parsedMessage.action !== 'string') {
+        throw new ApiError(400, 'Message must contain an action');
+      }
+
+      if (client) {
+        client.messageCount = (client.messageCount || 0) + 1;
+        client.lastActivity = Date.now();
+      }
+
+      clearTimeout(timeout);
+
+      switch (true) {
+        case parsedMessage.action.startsWith('/auth/login'):
+          await authController.login(ws, parsedMessage.data);
+          break;
+          
+        case parsedMessage.action.startsWith('/auth/logout'):
+          await authController.logout(ws);
+          cleanupClient(clientId);
+          break;
+          
+        case parsedMessage.action.startsWith('/accounts'):
+          await handleAccountOperations(ws, parsedMessage, clientId);
+          break;
+          
+        default:
+          throw new ApiError(404, 'Endpoint not found');
+      }
+
+    } catch (error) {
+      console.error(`Message error from ${clientId}:`, error);
+      
+      if (ws.readyState === WebSocket.OPEN) {
+        const errorResponse = error instanceof ApiError
+          ? error
+          : new ApiError(500, 'Internal server error');
+        
+        ws.send(JSON.stringify({
+          status: errorResponse.status,
+          message: errorResponse.message,
+          timestamp: Date.now()
+        }));
+      }
+      
+      if (error instanceof ApiError && error.status >= 500) {
+        cleanupClient(clientId);
+      }
+    }
+  });
+
   async function handleAccountOperations(ws: WebSocket, message: WebSocketMessage, clientId: string) {
     const client = clients.get(clientId);
     if (!client) return;
 
-    // Authenticate if not already authenticated
- if (!client.user && message.token) {
-    client.user = await authenticate(ws, message.token);
-    if (!client.user) return;
-  }
+    if (!client.user && message.token) {
+      client.user = await authenticate(ws, message.token);
+      if (!client.user) return;
+    }
 
     if (!client.user) {
       ws.send(JSON.stringify(new ApiError(401, 'Authentication required')));
@@ -304,7 +351,6 @@ ws.on('message', async (message: string | Buffer) => {
     }
   }
 
-  // Connection cleanup
   ws.on('close', (code, reason) => {
     console.log(`Connection closed: ${clientId}, Code: ${code}, Reason: ${reason.toString()}`);
     cleanupClient(clientId);
@@ -316,16 +362,13 @@ ws.on('message', async (message: string | Buffer) => {
   });
 });
 
-// Graceful shutdown
 const shutdown = async () => {
   console.log('Shutting down gracefully...');
   
-  // Close all client connections
   clients.forEach((client, clientId) => {
     cleanupClient(clientId);
   });
 
-  // Close WebSocket server
   await new Promise<void>((resolve) => {
     wss.close(() => {
       console.log('WebSocket server closed');
@@ -333,7 +376,6 @@ const shutdown = async () => {
     });
   });
 
-  // Close HTTP server
   await new Promise<void>((resolve) => {
     server.close(() => {
       console.log('HTTP server closed');
@@ -344,12 +386,10 @@ const shutdown = async () => {
   process.exit(0);
 };
 
-// Handle signals
 ['SIGTERM', 'SIGINT'].forEach(signal => {
   process.on(signal, shutdown);
 });
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
   shutdown();
@@ -359,7 +399,6 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason);
 });
 
-// Start server
 const PORT = parseInt(process.env.PORT || '5111');
 
 initializeDatabase().then(() => {
