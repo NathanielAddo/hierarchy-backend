@@ -333,9 +333,6 @@ wss.on('connection', (ws: WebSocket, request: AuthenticatedRequest) => {
         case 'getAccounts':
           await accountController.getAccounts(ws, client.user);
           break;
-        case 'getOrganizationUsers':
-          await accountController.getOrganizationUsers(ws, client.user, message.token || '');
-          break;
         case 'assignUsers':
           await accountController.assignUsers(ws, message.data, client.user);
           break;
