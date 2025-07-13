@@ -160,9 +160,8 @@ function cleanupClient(clientId: string) {
   }
 }
 
-// Upgrade handler for WebSocket connections
 server.on('upgrade', (request: AuthenticatedRequest, socket, head) => {
-  // CORS validation
+  // 1. CORS Validation
   const allowedOrigins = ['https://geo-acc.vercel.app', 'http://localhost:3000'];
   const origin = request.headers.origin ?? null;
   
@@ -173,19 +172,34 @@ server.on('upgrade', (request: AuthenticatedRequest, socket, head) => {
     return;
   }
 
-  // Path validation
+  // 2. Path Validation
   const { pathname } = new URL(request.url || '', `http://${request.headers.host}`);
-  const allowedPaths = ['/api/ws', '/api/auth', '/api/accounts'];
+  const allowedPaths = [
+    '/api/ws',
+    '/api/auth/login',
+    '/api/auth/logout',
+    '/api/accounts'
+  ];
+  
   const isAllowed = allowedPaths.some(path => pathname.startsWith(path));
-
+  
   if (!isAllowed) {
+    console.log(`Invalid path attempted: ${pathname}`);
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
     socket.destroy();
     return;
   }
 
-  // Handle WebSocket upgrade
+  // 3. Connection Upgrade
   wss.handleUpgrade(request, socket, head, (ws) => {
+    // 4. Add CORS headers to the WebSocket connection
+    if (origin && allowedOrigins.includes(origin)) {
+      ws.on('headers', (headers) => {
+        headers.push('Access-Control-Allow-Origin', origin);
+        headers.push('Access-Control-Allow-Credentials', 'true');
+      });
+    }
+    
     wss.emit('connection', ws, request);
   });
 });
@@ -228,61 +242,31 @@ wss.on('connection', (ws: WebSocket, request: AuthenticatedRequest) => {
     }
   }, CONNECTION_TIMEOUT);
 
-  // Message handler
-  ws.on('message', async (message: string | Buffer) => {
-    try {
-      const messageStr = message.toString();
-      
-      // Handle ping/pong
-      if (messageStr === 'ping') {
-        ws.send('pong');
-        isAlive = true;
-        return;
-      }
-      if (messageStr === 'pong') {
-        isAlive = true;
-        return;
-      }
-
-      // Parse message
-      const parsedMessage: WebSocketMessage = JSON.parse(messageStr);
-      console.log(`Received message from ${clientId}:`, parsedMessage);
-
-      // Clear initial timeout on first message
-      clearTimeout(timeout);
-
-      // Route messages based on path
-      switch (pathname) {
-        case '/api/auth/login':
-          await authController.login(ws, parsedMessage.data);
-          break;
-
-        case '/api/auth/logout':
-          await authController.logout(ws);
-          cleanupClient(clientId);
-          break;
-
-        case '/api/accounts':
-          await handleAccountOperations(ws, parsedMessage, clientId);
-          break;
-
-        default:
-          // Handle other WebSocket endpoints
-          if (parsedMessage.action === 'subscribe') {
-            subscribe(ws, parsedMessage.data.channel);
-            ws.send(JSON.stringify(new ApiResponse(200, 'Subscribed successfully')));
-          } else if (parsedMessage.action === 'unsubscribe') {
-            unsubscribe(ws, parsedMessage.data.channel);
-            ws.send(JSON.stringify(new ApiResponse(200, 'Unsubscribed successfully')));
-          } else {
-            ws.send(JSON.stringify(new ApiError(404, 'Endpoint not found')));
-          }
-      }
-    } catch (error) {
-      console.error(`Message error from ${clientId}:`, error);
-      ws.send(JSON.stringify(new ApiError(400, 'Invalid message format')));
+ws.on('message', async (message: string | Buffer) => {
+  try {
+    const parsedMessage: WebSocketMessage = JSON.parse(message.toString());
+    
+    // Route based on pathname
+    switch (pathname) {
+      case '/api/auth/login':
+        await authController.login(ws, parsedMessage.data);
+        break;
+        
+      case '/api/auth/logout':
+        await authController.logout(ws);
+        break;
+        
+      case '/api/accounts':
+        await handleAccountOperations(ws, parsedMessage, clientId);
+        break;
+        
+      default:
+        ws.send(JSON.stringify(new ApiError(404, 'Endpoint not found')));
     }
-  });
+  } catch (error) {
+    // Error handling
+  }
+});
 
   // Handle account operations
   async function handleAccountOperations(ws: WebSocket, message: WebSocketMessage, clientId: string) {
